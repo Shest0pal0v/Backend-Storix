@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storix API Tester</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .hidden { display: none; }
+    form { margin-bottom: 20px; }
+    label { display: block; margin-top: 10px; }
+    input, select, button, textarea { padding: 5px; margin-top: 5px; width: 100%; max-width: 400px; }
+    .section { border: 1px solid #ccc; padding: 10px; margin-bottom: 20px; }
+    h3 { margin: 0 0 10px; }
+    .error { color: red; }
+    pre { background: #f4f4f4; padding: 10px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Storix API Tester</h1>
+
+  <!-- Login -->
+  <div id="login-section" class="section">
+    <h2>Login</h2>
+    <form id="login-form">
+      <label>Username:<br><input type="text" id="login-username" required></label>
+      <label>Password:<br><input type="password" id="login-password" required></label>
+      <button type="submit">Login</button>
+    </form>
+    <div id="login-error" class="error"></div>
+  </div>
+
+  <!-- SysAdmin -->
+  <div id="sysadmin-section" class="section hidden">
+    <h2>SysAdmin Dashboard</h2>
+    <form id="create-admin-form">
+      <h3>Create Administrator</h3>
+      <label>Username:<br><input type="text" id="admin-username" required></label>
+      <label>Email:<br><input type="email" id="admin-email"></label>
+      <label>Password:<br><input type="password" id="admin-password" required></label>
+      <button type="submit">Create Admin</button>
+    </form>
+    <pre id="sysadmin-result"></pre>
+  </div>
+
+  <!-- Admin -->
+  <div id="admin-section" class="section hidden">
+    <h2>Admin Dashboard</h2>
+    <form id="create-warehouse-form">
+      <h3>Create Warehouse</h3>
+      <label>Name:<br><input type="text" id="warehouse-name" required></label>
+      <button type="submit">Create Warehouse</button>
+    </form>
+
+    <form id="create-worker-form">
+      <h3>Create Worker</h3>
+      <label>Username:<br><input type="text" id="worker-username" required></label>
+      <label>Email:<br><input type="email" id="worker-email"></label>
+      <label>Password:<br><input type="password" id="worker-password" required></label>
+      <label>Warehouse:<br><select id="worker-warehouse"></select></label>
+      <button type="submit">Create Worker</button>
+    </form>
+    <pre id="admin-result"></pre>
+  </div>
+
+  <!-- Worker -->
+  <div id="worker-section" class="section hidden">
+    <h2>Worker Dashboard</h2>
+    <form id="upload-video-form">
+      <h3>Upload Video</h3>
+      <input type="file" id="video-file" accept="video/*" required>
+      <button type="submit">Upload Video</button>
+    </form>
+
+    <form id="create-report-form">
+      <h3>Create Report</h3>
+      <label>Discrepancies:<br><input type="number" id="report-count" required></label>
+      <label>File (base64):<br><textarea id="report-file" rows="3"></textarea></label>
+      <button type="submit">Create Report</button>
+    </form>
+    <pre id="worker-result"></pre>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const origin = window.location.origin;
+      const baseUrl = origin + '/api';
+      let token, userId, userRole;
+      const $ = id => document.getElementById(id);
+
+      // Login
+      $('login-form').addEventListener('submit', async e => {
+        e.preventDefault();
+        $('login-error').innerText = '';
+        const username = $('login-username').value;
+        const password = $('login-password').value;
+        console.log('Login attempt', username);
+        const res = await fetch(`${baseUrl}/token/`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({username, password})
+        });
+        if (!res.ok) {
+          $('login-error').innerText = `Login failed (${res.status})`;
+          return;
+        }
+        const data = await res.json();
+        token = data.access;
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        userId = payload.user_id;
+
+        const userRes = await fetch(`${baseUrl}/users/${userId}/`, {
+          headers: {'Authorization':'Bearer ' + token}
+        });
+        const user = await userRes.json();
+        userRole = user.role;
+        console.log('Logged in as', userRole);
+
+        $('login-section').classList.add('hidden');
+        if (userRole === 'sysadmin') initSysadmin();
+        else if (userRole === 'admin') initAdmin();
+        else if (userRole === 'worker') initWorker();
+      });
+
+      // SysAdmin
+      function initSysadmin() {
+        $('sysadmin-section').classList.remove('hidden');
+        $('create-admin-form').addEventListener('submit', async e => {
+          e.preventDefault();
+          console.log('Create admin');
+          const body = {
+            username: $('admin-username').value,
+            email: $('admin-email').value,
+            password: $('admin-password').value,
+            role: 'admin'
+          };
+          const res = await fetch(`${baseUrl}/users/`, {
+            method: 'POST',
+            headers: {
+              'Content-Type':'application/json',
+              'Authorization':'Bearer ' + token
+            },
+            body: JSON.stringify(body)
+          });
+          const json = await res.json().catch(()=>({detail:'No JSON'}));
+          console.log('Create admin:', res.status, json);
+          $('sysadmin-result').innerText = JSON.stringify(json, null, 2);
+        });
+      }
+
+      // Admin utilities
+      async function loadAdminData() {
+        console.log('Loading admin dashboard');
+        const res = await fetch(`${baseUrl}/dashboard/admin/`, {
+          headers: {'Authorization':'Bearer ' + token}
+        });
+        if (!res.ok) {
+          $('admin-result').innerText = `Error ${res.status}`;
+          return;
+        }
+        const data = await res.json();
+
+        // Fill warehouse select
+        const sel = $('worker-warehouse');
+        sel.innerHTML = '';
+        data.warehouses.forEach(item => {
+          sel.add(new Option(item.warehouse.name, item.warehouse.id));
+        });
+
+        // Show current warehouses & workers
+        let html = '';
+        data.warehouses.forEach(item => {
+          html += `<h4>${item.warehouse.name}</h4><ul>`;
+          item.workers.forEach(w => html += `<li>${w.username}</li>`);
+          html += '</ul>';
+        });
+        $('admin-result').innerHTML = html;
+      }
+
+      // Admin
+      function initAdmin() {
+        $('admin-section').classList.remove('hidden');
+        loadAdminData();
+
+        // Create warehouse
+        $('create-warehouse-form').addEventListener('submit', async e => {
+          e.preventDefault();
+          console.log('🔔 Create Warehouse clicked');
+          const name = $('warehouse-name').value.trim();
+          if (!name) {
+            alert('Введите имя склада');
+            return;
+          }
+          const res = await fetch(`${baseUrl}/warehouses/`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify({name})
+          });
+          const json = await res.json().catch(()=>({detail:'No JSON'}));
+          console.log('Создание склада:', res.status, json);
+          $('admin-result').innerText = JSON.stringify(json, null, 2);
+          loadAdminData();
+        });
+
+        // Create worker
+        $('create-worker-form').addEventListener('submit', async e => {
+          e.preventDefault();
+          console.log('Create worker');
+          const body = {
+            username: $('worker-username').value,
+            email: $('worker-email').value,
+            password: $('worker-password').value,
+            role: 'worker',
+            warehouse: parseInt($('worker-warehouse').value, 10)
+          };
+          const res = await fetch(`${baseUrl}/users/`, {
+            method: 'POST',
+            headers: {
+              'Content-Type':'application/json',
+              'Authorization':'Bearer ' + token
+            },
+            body: JSON.stringify(body)
+          });
+          const json = await res.json().catch(()=>({detail:'No JSON'}));
+          console.log('Create worker:', res.status, json);
+          $('admin-result').innerText = JSON.stringify(json, null, 2);
+          loadAdminData();
+        });
+      }
+
+      // Worker
+      function initWorker() {
+        $('worker-section').classList.remove('hidden');
+
+        $('upload-video-form').addEventListener('submit', async e => {
+          e.preventDefault();
+          console.log('Upload video');
+          const file = $('video-file').files[0];
+          const fd = new FormData();
+          fd.append('file_path', file);
+          const res = await fetch(`${baseUrl}/videos/`, {
+            method: 'POST',
+            headers: {'Authorization':'Bearer ' + token},
+            body: fd
+          });
+          console.log('Video upload status', res.status);
+          $('worker-result').innerText = `Video status ${res.status}`;
+        });
+
+        $('create-report-form').addEventListener('submit', async e => {
+          e.preventDefault();
+          console.log('Create report');
+          const body = {
+            discrepancies_count: parseInt($('report-count').value,10),
+            file_data: $('report-file').value
+          };
+          const res = await fetch(`${baseUrl}/reports/`, {
+            method: 'POST',
+            headers: {
+              'Content-Type':'application/json',
+              'Authorization':'Bearer ' + token
+            },
+            body: JSON.stringify(body)
+          });
+          console.log('Report status', res.status);
+          $('worker-result').innerText = `Report status ${res.status}`;
+        });
+      }
+    });
+  </script>
+</body>
+</html>
