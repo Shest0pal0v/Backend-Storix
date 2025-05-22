@@ -1,20 +1,24 @@
-from rest_framework import viewsets, permissions, status
+from rest_framework import viewsets, permissions, status, serializers
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from .models import User, Warehouse, Video, Report
 from .serializers import UserSerializer, WarehouseSerializer, VideoSerializer, ReportSerializer
 
+
 class IsSysAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(request.user.is_authenticated and request.user.role == User.ROLE_SYSADMIN)
+
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(request.user.is_authenticated and request.user.role == User.ROLE_ADMIN)
 
+
 class IsWorker(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(request.user.is_authenticated and request.user.role == User.ROLE_WORKER)
+
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
@@ -31,10 +35,20 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         role = serializer.validated_data.get('role')
+        user = self.request.user
+
         if role == User.ROLE_ADMIN:
-            serializer.save(sysadmin=self.request.user)
+            # Сисадмин создает админа
+            serializer.save(sysadmin=user)
+        elif role == User.ROLE_WORKER:
+            # Админ создает рабочего: указывает склад, но нужно убедиться, что это его склад
+            warehouse = serializer.validated_data.get('warehouse')
+            if warehouse and warehouse.admin != user:
+                raise serializers.ValidationError("Вы можете добавлять работников только в свои склады.")
+            serializer.save()
         else:
             serializer.save()
+
 
 class WarehouseViewSet(viewsets.ModelViewSet):
     queryset = Warehouse.objects.all()
@@ -46,6 +60,7 @@ class WarehouseViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(admin=self.request.user)
+
 
 class VideoViewSet(viewsets.ModelViewSet):
     queryset = Video.objects.all()
@@ -67,6 +82,7 @@ class VideoViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
+
 class ReportViewSet(viewsets.ModelViewSet):
     queryset = Report.objects.all()
     serializer_class = ReportSerializer
@@ -87,6 +103,7 @@ class ReportViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
+
 @api_view(['GET'])
 @permission_classes([IsSysAdmin])
 def sysadmin_dashboard(request):
@@ -94,19 +111,51 @@ def sysadmin_dashboard(request):
     data = UserSerializer(admins, many=True).data
     return Response({'admins': data}, status=status.HTTP_200_OK)
 
+
 @api_view(['GET'])
 @permission_classes([IsAdmin])
 def admin_dashboard(request):
+    warehouse_id = request.query_params.get('warehouse_id')
+    report_type = request.query_params.get('report_type')
+
     warehouses = Warehouse.objects.filter(admin=request.user)
+
+    if warehouse_id:
+        warehouses = warehouses.filter(id=warehouse_id)
+
     result = []
     for wh in warehouses:
+        reports = wh.reports.all()
+        if report_type:
+            reports = reports.filter(type=report_type)
+
         result.append({
             'warehouse': WarehouseSerializer(wh).data,
-            'workers':   UserSerializer(wh.workers.all(), many=True).data,
-            'videos':    VideoSerializer(wh.videos.all(), many=True).data,
-            'reports':   ReportSerializer(wh.reports.all(), many=True).data,
+            'workers': UserSerializer(wh.workers.all(), many=True).data,
+            'videos': VideoSerializer(wh.videos.all(), many=True).data,
+            'reports': ReportSerializer(reports, many=True).data,
         })
+
     return Response({'warehouses': result}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def change_password(request):
+    user = request.user
+    old_password = request.data.get('old_password')
+    new_password = request.data.get('new_password')
+
+    if not old_password or not new_password:
+        return Response({'error': 'Укажите старый и новый пароль'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not user.check_password(old_password):
+        return Response({'error': 'Неверный старый пароль'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(new_password)
+    user.save()
+    return Response({'success': 'Пароль успешно изменён'}, status=status.HTTP_200_OK)
+
 
 @api_view(['GET'])
 @permission_classes([IsWorker])
@@ -114,6 +163,6 @@ def worker_dashboard(request):
     wh = request.user.warehouse
     return Response({
         'warehouse': WarehouseSerializer(wh).data,
-        'videos':    VideoSerializer(wh.videos.all(), many=True).data,
-        'reports':   ReportSerializer(wh.reports.all(), many=True).data,
+        'videos': VideoSerializer(wh.videos.all(), many=True).data,
+        'reports': ReportSerializer(wh.reports.all(), many=True).data,
     }, status=status.HTTP_200_OK)
